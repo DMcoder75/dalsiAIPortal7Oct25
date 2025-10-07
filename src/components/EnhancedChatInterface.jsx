@@ -506,9 +506,18 @@ How can I assist you today?`,
 
   const migrateGuestMessages = async () => {
     try {
+      // Check if migration is pending
+      const pendingMigration = localStorage.getItem('pending_guest_migration')
+      if (!pendingMigration) return
+      
       const guestMessages = JSON.parse(localStorage.getItem('guest_messages') || '[]')
       
-      if (guestMessages.length === 0) return
+      if (guestMessages.length === 0) {
+        localStorage.removeItem('pending_guest_migration')
+        return
+      }
+
+      console.log('🔄 Migrating', guestMessages.length, 'guest messages to user account...')
 
       // Create a new chat for guest messages
       const firstUserMessage = guestMessages.find(m => m.sender === 'user')
@@ -527,29 +536,53 @@ How can I assist you today?`,
         .select()
         .single()
 
-      if (chatError) throw chatError
+      if (chatError) {
+        console.error('❌ Error creating chat for migration:', chatError)
+        throw chatError
+      }
+
+      console.log('✅ Created new chat:', newChat.id, 'Title:', chatTitle)
 
       // Save all guest messages to the database
       for (const msg of guestMessages) {
-        await saveMessage(newChat.id, msg.sender, msg.content, {
-          migrated_from_guest: true,
-          original_timestamp: msg.timestamp
-        })
+        const { error: msgError } = await supabase
+          .from('messages')
+          .insert([{
+            chat_id: newChat.id,
+            sender: msg.sender,
+            content: msg.content,
+            model_id: selectedModel,
+            content_type: 'text',
+            metadata: {
+              migrated_from_guest: true,
+              original_timestamp: msg.timestamp
+            },
+            context_data: { timestamp: msg.timestamp }
+          }])
+        
+        if (msgError) {
+          console.error('❌ Error saving message:', msgError)
+        }
       }
+
+      console.log('✅ All messages saved to database')
 
       // Set the new chat as current and load messages
       setCurrentChatId(newChat.id)
       setMessages(guestMessages)
       
-      // Clear guest messages from localStorage
+      // Clear guest messages and migration flag from localStorage
       localStorage.removeItem('guest_messages')
+      localStorage.removeItem('pending_guest_migration')
       
       // Reload chats to show the new chat in sidebar
       await loadChats()
 
-      console.log('Guest messages migrated successfully')
+      console.log('✅ Guest messages migrated successfully!')
     } catch (error) {
-      console.error('Error migrating guest messages:', error)
+      console.error('❌ Error migrating guest messages:', error)
+      // Clear the flag even on error to prevent infinite retry
+      localStorage.removeItem('pending_guest_migration')
     }
   }
 
@@ -624,16 +657,23 @@ How can I assist you today?`,
   }
 
   const loadChats = async () => {
+    if (!user) return // Don't load chats for guest users
+    
     try {
+      console.log('🔄 Loading chats for user:', user.id)
+      
       const { data, error } = await supabase
         .from('chats')
         .select('*')
+        .eq('user_id', user.id) // Filter by current user
         .order('updated_at', { ascending: false })
 
       if (error) throw error
+      
+      console.log('✅ Loaded', data?.length || 0, 'chats')
       setChats(data || [])
     } catch (error) {
-      console.error('Error loading chats:', error)
+      console.error('❌ Error loading chats:', error)
     }
   }
 
@@ -838,11 +878,13 @@ How can I assist you today?`,
     // Auto-create chat if none exists (for logged-in users)
     if (user && !currentChatId) {
       try {
+        console.log('🔄 Auto-creating chat for first message...')
+        
         // Create chat with first few words of message as title
         const messageWords = inputMessage.trim().split(' ').slice(0, 5).join(' ')
         const chatTitle = messageWords.length > 40 ? messageWords.substring(0, 40) + '...' : messageWords
         
-        const { data, error} = await supabase
+        const { data, error } = await supabase
           .from('chats')
           .insert([{ 
             user_id: user.id, 
@@ -853,12 +895,24 @@ How can I assist you today?`,
           .select()
           .single()
 
-        if (error) throw error
+        if (error) {
+          console.error('❌ Error creating chat:', error)
+          throw error
+        }
         
+        console.log('✅ Chat created successfully:', data.id, 'Title:', chatTitle)
+        
+        // Set current chat ID immediately
         setCurrentChatId(data.id)
+        
+        // Reload chat list to show new chat in sidebar
         await loadChats()
+        
+        console.log('✅ Chat list refreshed')
       } catch (error) {
-        console.error('Error auto-creating chat:', error)
+        console.error('❌ Error auto-creating chat:', error)
+        alert('Failed to create chat. Please try again.')
+        return // Don't proceed if chat creation fails
       }
     }
 

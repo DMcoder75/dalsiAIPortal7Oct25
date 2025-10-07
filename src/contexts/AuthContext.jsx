@@ -36,8 +36,14 @@ export const AuthProvider = ({ children }) => {
     }
   }
 
-  const login = (userData) => {
+  const login = async (userData) => {
     setUser(userData)
+    // Trigger guest message migration if there are any
+    const guestMessages = JSON.parse(localStorage.getItem('guest_messages') || '[]')
+    if (guestMessages.length > 0) {
+      // Set a flag to trigger migration in ChatInterface
+      localStorage.setItem('pending_guest_migration', 'true')
+    }
   }
 
   const logout = async () => {
